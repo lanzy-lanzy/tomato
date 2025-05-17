@@ -1,0 +1,257 @@
+#include <WiFi.h>
+#include <ESP32Servo.h>
+#include <WebServer.h>
+#include <ArduinoJson.h>
+
+Servo servo1; // Stopper servo
+Servo servo2; // Sorting servo
+
+// WiFi credentials
+const char* ssid = "Mich 2.4G";      // Replace with your WiFi SSID
+const char* password = "@Mich123***"; // Replace with your WiFi Password
+
+// Web server on port 80
+WebServer server(80);
+
+// Status variables
+bool isRunning = false;
+int ripeTomatoCount = 0;
+int greenTomatoCount = 0;
+int cameraRipeTomatoCount = 0;    // Count of ripe tomatoes detected by camera
+int cameraGreenTomatoCount = 0;   // Count of green tomatoes detected by camera
+bool cameraMode = false;          // Whether camera detection mode is active
+String lastAction = "none";
+String lastDetectionSource = "manual"; // "manual", "camera"
+
+// Timer variables for non-blocking servo movement
+unsigned long lastActionTime = 0;
+bool waitingForServoReturn = false;
+int lastServoPosition = 90;  // Default neutral position
+
+void setup() {
+  Serial.begin(115200);
+
+  // Attach the servos
+  servo1.attach(18); // GPIO 18 for servo1
+  servo2.attach(19); // GPIO 19 for servo2
+
+  // Initial positions
+  servo1.write(90); // Stopper in neutral pos
+  servo2.write(90); // Sorter neutral
+
+  // Connect to WiFi
+  Serial.print("Connecting to WiFi...");
+  WiFi.begin(ssid, password);
+
+  // Wait for connection
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nConnected to WiFi!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  // Set up web server routes
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/status", HTTP_GET, handleStatus);
+  server.on("/control", HTTP_POST, handleControl);
+  server.on("/sort", HTTP_POST, handleSort);
+  server.enableCORS(true);
+
+  // Start server
+  server.begin();
+  Serial.println("HTTP server started");
+}
+
+void loop() {
+  server.handleClient();
+
+
+  if (waitingForServoReturn && millis() - lastActionTime >= 3000) {
+    // 2 seconds have passed, move servo to neutral position
+    servo2.write(90);
+    Serial.println("Sorting Neutral");
+    waitingForServoReturn = false;
+  }
+
+  // Also handle serial commands for backward compatibility
+  if (Serial.available()) {
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+    processCommand(command);
+  }
+}
+
+void handleRoot() {
+  String html = "<html><head><title>Tomato Sorter</title></head>";
+  html += "<body><h1>Tomato Sorter ESP32 Controller</h1>";
+  html += "<p>Use the /control and /sort endpoints to control the sorter.</p>";
+  html += "<p>Current IP: " + WiFi.localIP().toString() + "</p>";
+  html += "</body></html>";
+  server.send(200, "text/html", html);
+}
+
+void handleStatus() {
+  DynamicJsonDocument doc(384);  // Increased size for additional fields
+  doc["running"] = isRunning;
+  doc["ripe_count"] = ripeTomatoCount;
+  doc["green_count"] = greenTomatoCount;
+  doc["camera_ripe_count"] = cameraRipeTomatoCount;
+  doc["camera_green_count"] = cameraGreenTomatoCount;
+  doc["total_ripe_count"] = ripeTomatoCount + cameraRipeTomatoCount;
+  doc["total_green_count"] = greenTomatoCount + cameraGreenTomatoCount;
+  doc["camera_mode"] = cameraMode;
+  doc["last_action"] = lastAction;
+  doc["last_detection_source"] = lastDetectionSource;
+  doc["ip"] = WiFi.localIP().toString();
+
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void handleControl() {
+  if (server.hasArg("plain")) {
+    String body = server.arg("plain");
+    DynamicJsonDocument doc(256);
+    DeserializationError error = deserializeJson(doc, body);
+
+    if (!error) {
+      String command = doc["command"].as<String>();
+      processCommand(command);
+      server.send(200, "application/json", "{\"status\":\"success\",\"command\":\"" + command + "\"}");
+    } else {
+      server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
+    }
+  } else {
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No data provided\"}");
+  }
+}
+
+void handleSort() {
+  if (server.hasArg("plain")) {
+    String body = server.arg("plain");
+    DynamicJsonDocument doc(256);
+    DeserializationError error = deserializeJson(doc, body);
+
+    if (!error) {
+      String type = doc["type"].as<String>();
+      bool fromCamera = doc["from_camera"] | false;  // Default to false if not provided
+
+      // Set detection source
+      lastDetectionSource = fromCamera ? "camera" : "manual";
+
+      if (type == "ripe") {
+        processCommand("sort_ripe");
+
+        // Update appropriate counter based on source
+        if (fromCamera) {
+          cameraRipeTomatoCount++;
+          Serial.println("Camera detected ripe tomato");
+        } else {
+          ripeTomatoCount++;
+        }
+
+        // Send response with detailed information
+        DynamicJsonDocument responseDoc(256);
+        responseDoc["status"] = "success";
+        responseDoc["sorted"] = "ripe";
+        responseDoc["from_camera"] = fromCamera;
+        responseDoc["ripe_count"] = ripeTomatoCount;
+        responseDoc["green_count"] = greenTomatoCount;
+        responseDoc["camera_ripe_count"] = cameraRipeTomatoCount;
+        responseDoc["camera_green_count"] = cameraGreenTomatoCount;
+
+        String response;
+        serializeJson(responseDoc, response);
+        server.send(200, "application/json", response);
+
+      } else if (type == "green") {
+        processCommand("sort_unripe");
+
+        // Update appropriate counter based on source
+        if (fromCamera) {
+          cameraGreenTomatoCount++;
+          Serial.println("Camera detected green tomato");
+        } else {
+          greenTomatoCount++;
+        }
+
+        // Send response with detailed information
+        DynamicJsonDocument responseDoc(256);
+        responseDoc["status"] = "success";
+        responseDoc["sorted"] = "green";
+        responseDoc["from_camera"] = fromCamera;
+        responseDoc["ripe_count"] = ripeTomatoCount;
+        responseDoc["green_count"] = greenTomatoCount;
+        responseDoc["camera_ripe_count"] = cameraRipeTomatoCount;
+        responseDoc["camera_green_count"] = cameraGreenTomatoCount;
+
+        String response;
+        serializeJson(responseDoc, response);
+        server.send(200, "application/json", response);
+
+      } else {
+        server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid tomato type\"}");
+      }
+    } else {
+      server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
+    }
+  } else {
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No data provided\"}");
+  }
+}
+
+void processCommand(String command) {
+  lastAction = command;
+
+  if (command == "stop") {
+    servo1.write(80);  // Close stopper
+    isRunning = false;
+    Serial.println("Stopper Closed");
+  }
+  else if (command == "release") {
+    servo1.write(180);  // Release stopper
+    isRunning = true;
+    Serial.println("Stopper Released");
+  }
+  else if (command == "sort_ripe") {
+    servo2.write(110); // Move sorter servo for ripe tomato
+    Serial.println("Sorting Ripe");
+    waitingForServoReturn = true;
+    lastActionTime = millis();  // Set timer for 2 seconds
+  }
+  else if (command == "sort_unripe" || command == "sort_green") {
+    servo2.write(70);  // Move sorter servo for unripe tomato
+    Serial.println("Sorting Green");
+    waitingForServoReturn = true;
+    lastActionTime = millis();  // Set timer for 2 seconds
+  }
+  else if (command == "reset_counts") {
+    ripeTomatoCount = 0;
+    greenTomatoCount = 0;
+    Serial.println("Reset Counts");
+  }
+  else if (command == "reset_camera_counts") {
+    cameraRipeTomatoCount = 0;
+    cameraGreenTomatoCount = 0;
+    Serial.println("Reset Camera Counts");
+  }
+  else if (command == "reset_all_counts") {
+    ripeTomatoCount = 0;
+    greenTomatoCount = 0;
+    cameraRipeTomatoCount = 0;
+    cameraGreenTomatoCount = 0;
+    Serial.println("Reset All Counts");
+  }
+  else if (command == "camera_mode_on") {
+    cameraMode = true;
+    Serial.println("Camera Mode Enabled");
+  }
+  else if (command == "camera_mode_off") {
+    cameraMode = false;
+    Serial.println("Camera Mode Disabled");
+  }
+}

@@ -1,0 +1,792 @@
+{% extends 'base.html' %}
+
+{% block title %}Tomato Sorter - Home{% endblock %}
+
+{% block extra_head %}
+<style>
+    .tomato-red {
+        background-color: rgba(255, 0, 0, 0.5);
+        box-shadow: 0 0 20px 10px rgba(255, 0, 0, 0.5);
+    }
+
+    .tomato-green {
+        background-color: rgba(0, 128, 0, 0.5);
+        box-shadow: 0 0 20px 10px rgba(0, 128, 0, 0.5);
+    }
+
+    .pulse {
+        animation: pulse-animation 1.5s infinite;
+    }
+
+    @keyframes pulse-animation {
+        0% {
+            transform: scale(0.8);
+            opacity: 0.7;
+        }
+        50% {
+            transform: scale(1.2);
+            opacity: 0.5;
+        }
+        100% {
+            transform: scale(0.8);
+            opacity: 0.7;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block connection_status %}
+<div x-data="{ showIpForm: false, ipAddress: '{{ device.ip_address|default:"" }}' }">
+    <div class="flex items-center">
+        <span class="mr-2">ESP32:</span>
+        <span class="inline-block w-3 h-3 rounded-full mr-2 {% if device_status.online %}bg-green-500{% else %}bg-red-500{% endif %}"></span>
+        <span class="mr-2">{{ device_status.ip }}</span>
+        <button @click="showIpForm = !showIpForm" class="text-blue-500 hover:text-blue-700">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+            </svg>
+        </button>
+    </div>
+
+    <div x-show="showIpForm" x-cloak class="mt-2">
+        <form hx-post="{% url 'update_ip' %}" hx-swap="outerHTML" class="flex">
+            <input type="text" name="ip_address" x-model="ipAddress" placeholder="192.168.1.100"
+                   class="border rounded px-2 py-1 text-sm w-32 mr-2">
+            <button type="submit" class="bg-blue-500 text-white rounded px-2 py-1 text-sm">
+                Connect
+            </button>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div x-data="tomatoSorter()" x-init="initSorter()" class="grid grid-cols-1 md:grid-cols-2 gap-8">
+    <!-- Control Panel -->
+    <div class="bg-white rounded-lg shadow-md p-6">
+        <h2 class="text-xl font-semibold mb-4">Control Panel</h2>
+
+        <div class="mb-6">
+            <div class="flex justify-between items-center mb-2">
+                <span class="font-medium">Sorter Status:</span>
+                <span x-text="status.running ? 'Running' : 'Stopped'"
+                      :class="status.running ? 'text-green-600' : 'text-red-600'"></span>
+            </div>
+
+            <div class="flex space-x-4">
+                <button @click="controlDevice('release')"
+                        :disabled="status.running"
+                        :class="status.running ? 'bg-gray-300 cursor-not-allowed' : 'bg-green-500 hover:bg-green-600'"
+                        class="flex-1 text-white font-medium py-2 px-4 rounded">
+                    Start
+                </button>
+
+                <button @click="controlDevice('stop')"
+                        :disabled="!status.running"
+                        :class="!status.running ? 'bg-gray-300 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600'"
+                        class="flex-1 text-white font-medium py-2 px-4 rounded">
+                    Stop
+                </button>
+            </div>
+        </div>
+
+        <div class="mb-6">
+            <h3 class="font-medium mb-2">Manual Sorting</h3>
+            <div class="flex space-x-4">
+                <button @click="sortTomato('ripe')"
+                        class="flex-1 bg-red-500 hover:bg-red-600 text-white font-medium py-2 px-4 rounded">
+                    Ripe
+                </button>
+
+                <button @click="sortTomato('green')"
+                        class="flex-1 bg-green-500 hover:bg-green-600 text-white font-medium py-2 px-4 rounded">
+                    Green
+                </button>
+            </div>
+        </div>
+
+        <div class="mb-6">
+            <h3 class="font-medium mb-2">Reset Position</h3>
+            <button @click="controlDevice('sort_neutral')"
+                    class="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium py-2 px-4 rounded">
+                Reset Sorter Position
+            </button>
+        </div>
+
+        <div>
+            <h3 class="font-medium mb-2">Camera Integration</h3>
+            <div class="flex justify-between items-center mb-2">
+                <span class="font-medium">Camera Mode:</span>
+                <span x-text="status.camera_mode ? 'Enabled' : 'Disabled'"
+                      :class="status.camera_mode ? 'text-green-600' : 'text-gray-600'"></span>
+            </div>
+            <div class="flex space-x-2 mb-4">
+                <button @click="controlDevice('camera_mode_on')"
+                        :disabled="status.camera_mode"
+                        :class="status.camera_mode ? 'bg-gray-300 cursor-not-allowed' : 'bg-green-500 hover:bg-green-600'"
+                        class="flex-1 text-white font-medium py-2 px-4 rounded">
+                    Enable
+                </button>
+                <button @click="controlDevice('camera_mode_off')"
+                        :disabled="!status.camera_mode"
+                        :class="!status.camera_mode ? 'bg-gray-300 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600'"
+                        class="flex-1 text-white font-medium py-2 px-4 rounded">
+                    Disable
+                </button>
+            </div>
+
+            <h3 class="font-medium mb-2">Reset Counters</h3>
+            <div class="grid grid-cols-2 gap-2 mb-2">
+                <button @click="controlDevice('reset_counts')"
+                        class="bg-yellow-500 hover:bg-yellow-600 text-white font-medium py-2 px-4 rounded">
+                    Reset Manual
+                </button>
+                <button @click="controlDevice('reset_camera_counts')"
+                        class="bg-yellow-500 hover:bg-yellow-600 text-white font-medium py-2 px-4 rounded">
+                    Reset Camera
+                </button>
+            </div>
+            <button @click="controlDevice('reset_all_counts')"
+                    class="w-full bg-red-500 hover:bg-red-600 text-white font-medium py-2 px-4 rounded">
+                Reset All Counters
+            </button>
+        </div>
+    </div>
+
+    <!-- Statistics Panel -->
+    <div class="bg-white rounded-lg shadow-md p-6">
+        <h2 class="text-xl font-semibold mb-4">Statistics</h2>
+
+        <div class="grid grid-cols-2 gap-4 mb-6">
+            <div class="bg-red-100 rounded-lg p-4">
+                <div class="text-center mb-2">
+                    <div class="text-3xl font-bold text-red-600" x-text="status.ripe_count + status.camera_ripe_count">{{ device_status.ripe_count }}</div>
+                    <div class="text-sm text-gray-600">Total Ripe Tomatoes</div>
+                </div>
+                <div class="flex justify-between text-sm border-t pt-2">
+                    <div>
+                        <span class="text-gray-600">Manual:</span>
+                        <span class="font-medium" x-text="status.ripe_count">{{ device_status.ripe_count }}</span>
+                    </div>
+                    <div>
+                        <span class="text-gray-600">Camera:</span>
+                        <span class="font-medium" x-text="status.camera_ripe_count">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-green-100 rounded-lg p-4">
+                <div class="text-center mb-2">
+                    <div class="text-3xl font-bold text-green-600" x-text="status.green_count + status.camera_green_count">{{ device_status.green_count }}</div>
+                    <div class="text-sm text-gray-600">Total Green Tomatoes</div>
+                </div>
+                <div class="flex justify-between text-sm border-t pt-2">
+                    <div>
+                        <span class="text-gray-600">Manual:</span>
+                        <span class="font-medium" x-text="status.green_count">{{ device_status.green_count }}</span>
+                    </div>
+                    <div>
+                        <span class="text-gray-600">Camera:</span>
+                        <span class="font-medium" x-text="status.camera_green_count">0</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="mb-6">
+            <h3 class="font-medium mb-2">Current Session</h3>
+            <div class="bg-gray-100 rounded-lg p-4">
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <div class="text-sm text-gray-600">Status:</div>
+                        <div class="font-medium" x-text="sessionActive ? 'Active' : 'Inactive'">
+                            {% if active_session %}Active{% else %}Inactive{% endif %}
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="text-sm text-gray-600">Duration:</div>
+                        <div class="font-medium" x-text="formatDuration(sessionDuration)">-</div>
+                    </div>
+
+                    <div>
+                        <div class="text-sm text-gray-600">Total Sorted:</div>
+                        <div class="font-medium" x-text="sessionTotal">
+                            {% if active_session %}{{ active_session.total_tomatoes }}{% else %}0{% endif %}
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="text-sm text-gray-600">Efficiency:</div>
+                        <div class="font-medium" x-text="calculateEfficiency() + '%'">-</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div>
+            <h3 class="font-medium mb-2">Recent Sessions</h3>
+            <div class="overflow-x-auto">
+                <table class="min-w-full bg-white">
+                    <thead>
+                        <tr>
+                            <th class="py-2 px-4 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+                            <th class="py-2 px-4 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                            <th class="py-2 px-4 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                            <th class="py-2 px-4 border-b text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tomatoes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for session in sessions %}
+                        <tr>
+                            <td class="py-2 px-4 border-b text-sm">{{ session.id }}</td>
+                            <td class="py-2 px-4 border-b text-sm">{{ session.start_time|date:"M d, Y" }}</td>
+                            <td class="py-2 px-4 border-b text-sm">{{ session.duration|floatformat:0 }}s</td>
+                            <td class="py-2 px-4 border-b text-sm">{{ session.total_tomatoes }}</td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="4" class="py-2 px-4 border-b text-sm text-center text-gray-500">No sessions yet</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Camera Feed and Detection -->
+    <div class="bg-white rounded-lg shadow-md p-6 md:col-span-2" x-data="webcamDetector()">
+        <h2 class="text-xl font-semibold mb-4">Camera Feed & Detection</h2>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div id="camera-container" class="bg-gray-200 rounded-lg aspect-video flex items-center justify-center relative">
+                <!-- Camera feed -->
+                <div x-show="!cameraActive" class="text-gray-500 text-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                    <p>Camera feed not available</p>
+                    <p class="text-sm">Connect your camera to enable live detection</p>
+                    <button @click="startCamera()" class="mt-2 bg-blue-500 hover:bg-blue-600 text-white font-medium py-1 px-3 rounded text-sm">
+                        Start Camera
+                    </button>
+                </div>
+
+                <!-- Video element for webcam -->
+                <video x-ref="video" x-show="cameraActive" class="w-full h-full object-cover rounded-lg"></video>
+
+                <!-- Canvas for processing (hidden) -->
+                <canvas x-ref="canvas" class="hidden"></canvas>
+
+                <!-- Detection overlay -->
+                <div x-show="cameraActive && detectionActive" class="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <div x-show="lastDetection" :class="{'tomato-red': lastDetection === 'ripe', 'tomato-green': lastDetection === 'green'}"
+                         class="w-24 h-24 rounded-full opacity-50 pulse"></div>
+                </div>
+
+                <!-- Camera detection stats -->
+                <div x-show="cameraActive" class="absolute top-2 left-2 bg-black bg-opacity-50 text-white px-3 py-1 rounded text-sm">
+                    <span>Camera Detections: </span>
+                    <span x-text="cameraDetectedCount"></span>
+                </div>
+
+                <!-- Camera controls -->
+                <div x-show="cameraActive" class="absolute bottom-2 right-2 flex space-x-2">
+                    <button @click="toggleDetection()"
+                            :class="detectionActive ? 'bg-red-500' : 'bg-green-500'"
+                            class="text-white rounded-full p-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                        </svg>
+                    </button>
+                    <button @click="stopCamera()" class="bg-gray-700 text-white rounded-full p-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            <div>
+                <div class="mb-4">
+                    <h3 class="font-medium mb-2">Detection Settings</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Detection Sensitivity</label>
+                            <input type="range" min="0" max="100" x-model="sensitivity" @change="updateWebcamConfig()" class="w-full">
+                            <div class="flex justify-between text-xs text-gray-500">
+                                <span>Low</span>
+                                <span>High</span>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Detection Mode</label>
+                            <select x-model="detectionMode" @change="updateWebcamConfig()" class="w-full border rounded-md py-2 px-3 text-gray-700">
+                                <option value="auto">Automatic</option>
+                                <option value="manual">Manual</option>
+                                <option value="hybrid">Hybrid</option>
+                            </select>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Ripe Threshold</label>
+                                <div class="flex items-center space-x-2">
+                                    <input type="number" x-model="ripeMin" @change="updateWebcamConfig()" min="0" max="100" class="w-full border rounded-md py-1 px-2 text-gray-700">
+                                    <span>-</span>
+                                    <input type="number" x-model="ripeMax" @change="updateWebcamConfig()" min="0" max="100" class="w-full border rounded-md py-1 px-2 text-gray-700">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Green Threshold</label>
+                                <div class="flex items-center space-x-2">
+                                    <input type="number" x-model="greenMin" @change="updateWebcamConfig()" min="0" max="100" class="w-full border rounded-md py-1 px-2 text-gray-700">
+                                    <span>-</span>
+                                    <input type="number" x-model="greenMax" @change="updateWebcamConfig()" min="0" max="100" class="w-full border rounded-md py-1 px-2 text-gray-700">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="space-y-4">
+                    <div>
+                        <h3 class="font-medium mb-2">Camera Detection Statistics</h3>
+                        <div class="bg-gray-100 rounded-lg p-4">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <div class="text-sm text-gray-600">Camera Detections:</div>
+                                    <div class="font-medium" x-text="cameraDetectedCount">0</div>
+                                </div>
+                                <div>
+                                    <div class="text-sm text-gray-600">Detection Mode:</div>
+                                    <div class="font-medium" x-text="detectionMode === 'auto' ? 'Automatic' : (detectionMode === 'manual' ? 'Manual' : 'Hybrid')">-</div>
+                                </div>
+                                <div>
+                                    <div class="text-sm text-gray-600">Last Sorted:</div>
+                                    <div class="font-medium" x-text="lastSortedTime ? new Date(lastSortedTime).toLocaleTimeString() : 'Never'">-</div>
+                                </div>
+                                <div>
+                                    <div class="text-sm text-gray-600">Status:</div>
+                                    <div class="font-medium" x-text="detectionActive ? 'Active' : 'Paused'">-</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div>
+                        <h3 class="font-medium mb-2">Last Detection</h3>
+                        <div class="bg-gray-100 rounded-lg p-4">
+                            <div x-show="!lastDetection" class="text-center text-gray-500">No recent detections</div>
+                            <div x-show="lastDetection" class="text-center">
+                                <div x-show="lastDetection === 'ripe' && isTomato" class="text-red-600 font-bold">Ripe Tomato Detected</div>
+                                <div x-show="lastDetection === 'green' && isTomato" class="text-green-600 font-bold">Green Tomato Detected</div>
+                                <div x-show="lastDetection === 'ripe' && !isTomato" class="text-red-600 font-bold">Red Object Detected</div>
+                                <div x-show="lastDetection === 'green' && !isTomato" class="text-green-600 font-bold">Green Object Detected</div>
+                                <div class="text-sm text-gray-600 mt-1" x-text="'Confidence: ' + lastConfidence + '%'"></div>
+                                <div x-show="!isTomato" class="text-sm text-red-500 mt-1">Not a tomato shape</div>
+                                <div class="mt-2">
+                                    <button @click="confirmDetection()"
+                                            :class="isTomato ? 'bg-blue-500 hover:bg-blue-600' : 'bg-gray-400'"
+                                            :disabled="!isTomato"
+                                            class="text-white font-medium py-1 px-3 rounded text-sm">
+                                        Confirm & Sort
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function tomatoSorter() {
+        return {
+            status: {
+                running: {{ device_status.running|yesno:"true,false" }},
+                ripe_count: {{ device_status.ripe_count }},
+                green_count: {{ device_status.green_count }},
+                camera_ripe_count: 0,
+                camera_green_count: 0,
+                device_online: {{ device_status.online|yesno:"true,false" }},
+                camera_mode: false
+            },
+            sessionActive: {% if active_session %}true{% else %}false{% endif %},
+            sessionDuration: 0,
+            sessionTotal: {% if active_session %}{{ active_session.total_tomatoes }}{% else %}0{% endif %},
+            statusInterval: null,
+
+            initSorter() {
+                this.updateStatus();
+                this.statusInterval = setInterval(() => this.updateStatus(), 5000);
+            },
+
+            updateStatus() {
+                fetch('{% url "get_status" %}')
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.esp_status && Object.keys(data.esp_status).length > 0) {
+                            this.status.running = data.esp_status.running;
+                            this.status.ripe_count = data.esp_status.ripe_count;
+                            this.status.green_count = data.esp_status.green_count;
+
+                            // Update camera-related counts if available
+                            if (data.esp_status.camera_ripe_count !== undefined) {
+                                this.status.camera_ripe_count = data.esp_status.camera_ripe_count;
+                            }
+                            if (data.esp_status.camera_green_count !== undefined) {
+                                this.status.camera_green_count = data.esp_status.camera_green_count;
+                            }
+                            if (data.esp_status.camera_mode !== undefined) {
+                                this.status.camera_mode = data.esp_status.camera_mode;
+                            }
+
+                            this.status.device_online = true;
+                        } else {
+                            this.status.device_online = false;
+                        }
+
+                        this.sessionActive = data.session_active;
+                        if (data.session_active) {
+                            this.sessionDuration = data.session_duration;
+
+                            // Calculate total including camera detections
+                            const manualTotal = data.ripe_count + data.green_count;
+                            const cameraTotal = this.status.camera_ripe_count + this.status.camera_green_count;
+                            this.sessionTotal = manualTotal + cameraTotal;
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error fetching status:', error);
+                    });
+            },
+
+            controlDevice(command) {
+                const formData = new FormData();
+                formData.append('command', command);
+
+                fetch('{% url "control_device" %}', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        if (command === 'release') {
+                            this.status.running = true;
+                            this.sessionActive = true;
+                        } else if (command === 'stop') {
+                            this.status.running = false;
+                        } else if (command === 'reset_counts') {
+                            this.status.ripe_count = 0;
+                            this.status.green_count = 0;
+                        }
+                    } else {
+                        alert('Error: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error controlling device:', error);
+                    alert('Failed to send command to device');
+                });
+            },
+
+            sortTomato(type, fromCamera = false) {
+                const formData = new FormData();
+                formData.append('type', type);
+                formData.append('from_camera', fromCamera ? 'true' : 'false');
+
+                fetch('{% url "sort_tomato" %}', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        // Update counts based on the response from the server
+                        if (data.camera_ripe_count !== undefined && data.camera_green_count !== undefined) {
+                            // If we have detailed counts from the ESP32, use them
+                            this.status.ripe_count = data.ripe_count || 0;
+                            this.status.green_count = data.green_count || 0;
+                            this.status.camera_ripe_count = data.camera_ripe_count || 0;
+                            this.status.camera_green_count = data.camera_green_count || 0;
+                            this.sessionTotal = this.status.ripe_count + this.status.green_count +
+                                               this.status.camera_ripe_count + this.status.camera_green_count;
+                        } else {
+                            // Fallback to simple increment
+                            if (type === 'ripe') {
+                                this.status.ripe_count++;
+                            } else {
+                                this.status.green_count++;
+                            }
+                            this.sessionTotal++;
+                        }
+                    } else {
+                        console.error('Error sorting tomato:', data.message);
+                        alert('Error: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error sorting tomato:', error);
+                    alert('Failed to sort tomato');
+                });
+            },
+
+            formatDuration(seconds) {
+                if (!seconds) return '-';
+                const mins = Math.floor(seconds / 60);
+                const secs = seconds % 60;
+                return `${mins}m ${secs}s`;
+            },
+
+            calculateEfficiency() {
+                if (!this.sessionTotal || !this.sessionDuration) return 0;
+                const tomatoesPerMinute = (this.sessionTotal / this.sessionDuration) * 60;
+                return Math.round(tomatoesPerMinute * 10) / 10;
+            }
+        };
+    }
+
+    function webcamDetector() {
+        return {
+            cameraActive: false,
+            detectionActive: false,
+            videoStream: null,
+            detectionInterval: null,
+            lastDetection: null,
+            lastConfidence: 0,
+            isTomato: false,
+
+            // Configuration
+            sensitivity: {{ device.detection_sensitivity }},
+            detectionMode: '{{ device.detection_mode }}',
+            ripeMin: {{ device.ripe_threshold_min }},
+            ripeMax: {{ device.ripe_threshold_max }},
+            greenMin: {{ device.green_threshold_min }},
+            greenMax: {{ device.green_threshold_max }},
+
+            // Statistics
+            cameraDetectedCount: 0,
+            lastSortedTime: null,
+            sortCooldown: 2000, // 2 seconds cooldown between automatic sorts
+
+            // Initialize webcam
+            async startCamera() {
+                try {
+                    // Request camera access
+                    this.videoStream = await navigator.mediaDevices.getUserMedia({
+                        video: {
+                            width: { ideal: 640 },
+                            height: { ideal: 480 }
+                        }
+                    });
+
+                    // Set video source
+                    const video = this.$refs.video;
+                    video.srcObject = this.videoStream;
+                    video.play();
+
+                    // Update state
+                    this.cameraActive = true;
+
+                    // Start detection if in auto mode
+                    if (this.detectionMode === 'auto') {
+                        this.startDetection();
+                    }
+
+                    // Update webcam config on server
+                    const formData = new FormData();
+                    formData.append('webcam_enabled', 'true');
+
+                    fetch('{% url "update_webcam_config" %}', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                } catch (error) {
+                    console.error('Error accessing camera:', error);
+                    alert('Could not access camera. Please make sure it is connected and you have granted permission.');
+                }
+            },
+
+            stopCamera() {
+                // Stop detection
+                this.stopDetection();
+
+                // Stop video stream
+                if (this.videoStream) {
+                    this.videoStream.getTracks().forEach(track => track.stop());
+                    this.videoStream = null;
+                }
+
+                // Update state
+                this.cameraActive = false;
+                this.lastDetection = null;
+                this.isTomato = false;
+
+                // Keep the camera detection count for reference
+                // this.cameraDetectedCount = 0; // Uncomment to reset counter when camera stops
+
+                // Update webcam config on server
+                const formData = new FormData();
+                formData.append('webcam_enabled', 'false');
+
+                fetch('{% url "update_webcam_config" %}', {
+                    method: 'POST',
+                    body: formData
+                });
+            },
+
+            startDetection() {
+                if (!this.cameraActive || this.detectionActive) return;
+
+                this.detectionActive = true;
+                // Use a longer interval (1 second) for the server-based detection to reduce load
+                this.detectionInterval = setInterval(() => this.detectTomato(), 1000);
+            },
+
+            stopDetection() {
+                if (this.detectionInterval) {
+                    clearInterval(this.detectionInterval);
+                    this.detectionInterval = null;
+                }
+                this.detectionActive = false;
+            },
+
+            toggleDetection() {
+                if (this.detectionActive) {
+                    this.stopDetection();
+                } else {
+                    this.startDetection();
+                }
+            },
+
+            async detectTomato() {
+                if (!this.cameraActive) return;
+
+                const video = this.$refs.video;
+                const canvas = this.$refs.canvas;
+                const context = canvas.getContext('2d');
+
+                // Set canvas dimensions to match video
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+
+                // Draw current video frame to canvas
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                try {
+                    // Convert canvas to base64 image
+                    const base64Image = canvas.toDataURL('image/jpeg', 0.8);
+
+                    // Send to backend for processing
+                    const response = await fetch('{% url "detect_tomato" %}', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            image: base64Image
+                        })
+                    });
+
+                    const result = await response.json();
+
+                    if (result.status === 'success' && result.detection) {
+                        const detection = result.detection;
+
+                        // If we have a detection with sufficient confidence
+                        if (detection.type && detection.confidence > 0) {
+                            this.lastDetection = detection.type;
+                            this.lastConfidence = Math.round(detection.confidence);
+                            this.isTomato = detection.is_tomato || false;
+
+                            // If it's a verified tomato, check if we should automatically sort
+                            if (this.isTomato) {
+                                const now = Date.now();
+                                const canSort = !this.lastSortedTime || (now - this.lastSortedTime > this.sortCooldown);
+
+                                // In auto mode, automatically sort if cooldown has passed
+                                if (this.detectionMode === 'auto' && canSort) {
+                                    this.confirmDetection();
+                                }
+                            }
+                        }
+                    } else if (result.status === 'error') {
+                        console.error('Detection error:', result.message);
+                    }
+                } catch (error) {
+                    console.error('Error during tomato detection:', error);
+                }
+            },
+
+            confirmDetection() {
+                if (!this.lastDetection || !this.isTomato) return;
+
+                // Set last sorted time to implement cooldown
+                this.lastSortedTime = Date.now();
+
+                // Increment camera detection counter
+                this.cameraDetectedCount++;
+
+                // Call the sort API with camera detection flag
+                const sorterComponent = document.querySelector('[x-data="tomatoSorter()"]').__x.$data;
+                sorterComponent.sortTomato(this.lastDetection, true); // true indicates camera detection
+
+                // Update UI to show we've detected and sorted a tomato
+                const detectionType = this.lastDetection;
+
+                // Reset detection state
+                this.lastDetection = null;
+                this.isTomato = false;
+
+                // Show a temporary success message
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'absolute top-2 right-2 bg-green-500 text-white px-4 py-2 rounded shadow-lg';
+                messageDiv.textContent = `Sorted ${detectionType} tomato!`;
+                document.getElementById('camera-container').appendChild(messageDiv);
+
+                // Remove the message after 2 seconds
+                setTimeout(() => {
+                    if (messageDiv.parentNode) {
+                        messageDiv.parentNode.removeChild(messageDiv);
+                    }
+                }, 2000);
+            },
+
+            updateWebcamConfig() {
+                const formData = new FormData();
+                formData.append('detection_sensitivity', this.sensitivity);
+                formData.append('detection_mode', this.detectionMode);
+                formData.append('ripe_threshold_min', this.ripeMin);
+                formData.append('ripe_threshold_max', this.ripeMax);
+                formData.append('green_threshold_min', this.greenMin);
+                formData.append('green_threshold_max', this.greenMax);
+
+                fetch('{% url "update_webcam_config" %}', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status !== 'success') {
+                        console.error('Error updating webcam config:', data.message);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error updating webcam config:', error);
+                });
+            }
+        };
+    }
+</script>
+{% endblock %}
