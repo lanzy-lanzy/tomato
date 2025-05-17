@@ -31,13 +31,17 @@ int lastServoPosition = 90;  // Default neutral position
 void setup() {
   Serial.begin(115200);
 
-  // Attach the servos
-  servo1.attach(18); // GPIO 18 for servo1
-  servo2.attach(19); // GPIO 19 for servo2
+  // Attach the servos with expanded pulse width range for better control
+  servo1.attach(18, 500, 2500); // GPIO 18 for servo1, min pulse 500us, max pulse 2500us
+  servo2.attach(19, 500, 2500); // GPIO 19 for servo2, min pulse 500us, max pulse 2500us
 
   // Initial positions
   servo1.write(90); // Stopper in neutral pos
+  delay(500);       // Give servo time to move
   servo2.write(90); // Sorter neutral
+  delay(500);       // Give servo time to move
+
+  Serial.println("Servos initialized");
 
   // Connect to WiFi
   Serial.print("Connecting to WiFi...");
@@ -58,6 +62,8 @@ void setup() {
   server.on("/status", HTTP_GET, handleStatus);
   server.on("/control", HTTP_POST, handleControl);
   server.on("/sort", HTTP_POST, handleSort);
+  server.on("/test", HTTP_GET, handleTest); // Add test endpoint
+  server.on("/camera_detect", HTTP_GET, handleCameraDetect); // Direct camera detection endpoint
   server.enableCORS(true);
 
   // Start server
@@ -68,12 +74,22 @@ void setup() {
 void loop() {
   server.handleClient();
 
-
-  if (waitingForServoReturn && millis() - lastActionTime >= 3000) {
+  // Handle servo return to neutral position
+  if (waitingForServoReturn && millis() - lastActionTime >= 2000) {
     // 2 seconds have passed, move servo to neutral position
+    Serial.println("Returning servo to neutral position (90)");
+
+    // Move servo back to neutral
     servo2.write(90);
-    Serial.println("Sorting Neutral");
+
+    // Small delay to ensure the servo starts moving
+    delay(100);
+
+    // Reset the waiting flag
     waitingForServoReturn = false;
+
+    // Log completion
+    Serial.println("Servo returned to neutral position");
   }
 
   // Also handle serial commands for backward compatibility
@@ -131,14 +147,46 @@ void handleControl() {
 }
 
 void handleSort() {
+  Serial.println("Received sort request");
+
   if (server.hasArg("plain")) {
     String body = server.arg("plain");
+    Serial.print("Request body: ");
+    Serial.println(body);
+
     DynamicJsonDocument doc(256);
     DeserializationError error = deserializeJson(doc, body);
 
     if (!error) {
       String type = doc["type"].as<String>();
-      bool fromCamera = doc["from_camera"] | false;  // Default to false if not provided
+      bool fromCamera = false;
+
+      // Check if from_camera field exists and get its value
+      if (doc.containsKey("from_camera")) {
+        // Handle different possible formats of the from_camera field
+        if (doc["from_camera"].is<bool>()) {
+          fromCamera = doc["from_camera"].as<bool>();
+        }
+        else if (doc["from_camera"].is<const char*>()) {
+          // Handle string values like "true" or "false"
+          String fromCameraStr = doc["from_camera"].as<String>();
+          fromCamera = (fromCameraStr == "true" || fromCameraStr == "1");
+        }
+        else if (doc["from_camera"].is<int>()) {
+          // Handle numeric values (1 = true, 0 = false)
+          fromCamera = (doc["from_camera"].as<int>() != 0);
+        }
+      }
+
+      // Force camera mode to be active when receiving camera detections
+      if (fromCamera) {
+        cameraMode = true;
+      }
+
+      Serial.print("Tomato type: ");
+      Serial.println(type);
+      Serial.print("From camera: ");
+      Serial.println(fromCamera ? "Yes" : "No");
 
       // Set detection source
       lastDetectionSource = fromCamera ? "camera" : "manual";
@@ -152,6 +200,7 @@ void handleSort() {
           Serial.println("Camera detected ripe tomato");
         } else {
           ripeTomatoCount++;
+          Serial.println("Manual sort: ripe tomato");
         }
 
         // Send response with detailed information
@@ -167,6 +216,7 @@ void handleSort() {
         String response;
         serializeJson(responseDoc, response);
         server.send(200, "application/json", response);
+        Serial.println("Response sent successfully");
 
       } else if (type == "green") {
         processCommand("sort_unripe");
@@ -177,6 +227,7 @@ void handleSort() {
           Serial.println("Camera detected green tomato");
         } else {
           greenTomatoCount++;
+          Serial.println("Manual sort: green tomato");
         }
 
         // Send response with detailed information
@@ -192,15 +243,94 @@ void handleSort() {
         String response;
         serializeJson(responseDoc, response);
         server.send(200, "application/json", response);
+        Serial.println("Response sent successfully");
 
       } else {
+        Serial.print("Invalid tomato type: ");
+        Serial.println(type);
         server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid tomato type\"}");
       }
     } else {
+      Serial.print("JSON parsing error: ");
+      Serial.println(error.c_str());
       server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid JSON\"}");
     }
   } else {
+    Serial.println("No data provided in request");
     server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"No data provided\"}");
+  }
+}
+
+void handleCameraDetect() {
+  // Direct endpoint for camera detection - simpler than the JSON endpoint
+  String type = server.arg("type");
+
+  Serial.println("Camera detection received!");
+  Serial.print("Detected tomato type: ");
+  Serial.println(type);
+
+  if (type == "ripe") {
+    // Immediately move the servo for ripe tomato
+    servo2.write(130);
+    Serial.println("Moving servo to RIPE position (130)");
+
+    // Update counter
+    cameraRipeTomatoCount++;
+
+    // Set up for return to neutral
+    waitingForServoReturn = true;
+    lastActionTime = millis();
+
+    // Send response
+    server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Servo moved for ripe tomato\"}");
+  }
+  else if (type == "green") {
+    // Immediately move the servo for green tomato
+    servo2.write(50);
+    Serial.println("Moving servo to GREEN position (50)");
+
+    // Update counter
+    cameraGreenTomatoCount++;
+
+    // Set up for return to neutral
+    waitingForServoReturn = true;
+    lastActionTime = millis();
+
+    // Send response
+    server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Servo moved for green tomato\"}");
+  }
+  else {
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid tomato type\"}");
+  }
+}
+
+void handleTest() {
+  // Test endpoint for servo control
+  String action = server.arg("action");
+
+  if (action == "ripe") {
+    processCommand("sort_ripe");
+    server.send(200, "text/plain", "Testing ripe tomato sorting");
+  }
+  else if (action == "green") {
+    processCommand("sort_unripe");
+    server.send(200, "text/plain", "Testing green tomato sorting");
+  }
+  else if (action == "servo") {
+    processCommand("test_servo");
+    server.send(200, "text/plain", "Running servo test sequence");
+  }
+  else {
+    String html = "<html><head><title>Servo Test</title></head><body>";
+    html += "<h1>Servo Test Interface</h1>";
+    html += "<p>Use the following links to test servo movements:</p>";
+    html += "<ul>";
+    html += "<li><a href='/test?action=ripe'>Test Ripe Tomato Sorting</a></li>";
+    html += "<li><a href='/test?action=green'>Test Green Tomato Sorting</a></li>";
+    html += "<li><a href='/test?action=servo'>Run Full Servo Test Sequence</a></li>";
+    html += "</ul>";
+    html += "</body></html>";
+    server.send(200, "text/html", html);
   }
 }
 
@@ -218,16 +348,28 @@ void processCommand(String command) {
     Serial.println("Stopper Released");
   }
   else if (command == "sort_ripe") {
-    servo2.write(110); // Move sorter servo for ripe tomato
-    Serial.println("Sorting Ripe");
+    // Move sorter servo for ripe tomato with more pronounced movement
+    servo2.write(130); // Increased from 110 to 130 for more movement
+    Serial.println("Sorting Ripe - Moving servo to position 130");
+
+    // Force a small delay to ensure the servo starts moving
+    delay(100);
+
+    // Set up for automatic return to neutral
     waitingForServoReturn = true;
-    lastActionTime = millis();  // Set timer for 2 seconds
+    lastActionTime = millis();
   }
   else if (command == "sort_unripe" || command == "sort_green") {
-    servo2.write(70);  // Move sorter servo for unripe tomato
-    Serial.println("Sorting Green");
+    // Move sorter servo for unripe/green tomato with more pronounced movement
+    servo2.write(50);  // Decreased from 70 to 50 for more movement
+    Serial.println("Sorting Green - Moving servo to position 50");
+
+    // Force a small delay to ensure the servo starts moving
+    delay(100);
+
+    // Set up for automatic return to neutral
     waitingForServoReturn = true;
-    lastActionTime = millis();  // Set timer for 2 seconds
+    lastActionTime = millis();
   }
   else if (command == "reset_counts") {
     ripeTomatoCount = 0;
@@ -253,5 +395,30 @@ void processCommand(String command) {
   else if (command == "camera_mode_off") {
     cameraMode = false;
     Serial.println("Camera Mode Disabled");
+  }
+  else if (command == "test_servo") {
+    // Test sequence for the sorting servo
+    Serial.println("Testing sorting servo...");
+
+    // Move to ripe position
+    Serial.println("Moving to ripe position (130)");
+    servo2.write(130);
+    delay(1000);
+
+    // Move to neutral
+    Serial.println("Moving to neutral position (90)");
+    servo2.write(90);
+    delay(1000);
+
+    // Move to green position
+    Serial.println("Moving to green position (50)");
+    servo2.write(50);
+    delay(1000);
+
+    // Return to neutral
+    Serial.println("Returning to neutral position (90)");
+    servo2.write(90);
+
+    Serial.println("Servo test complete");
   }
 }

@@ -153,12 +153,18 @@ def sort_tomato(request):
                     'from_camera': from_camera
                 }
 
+                # Log the request for debugging
+                logger.info(f"Sending to ESP32 at {device.ip_address}: {payload}")
+
                 # Send command to ESP
                 response = requests.post(
                     f"http://{device.ip_address}/sort",
                     json=payload,
                     timeout=2
                 )
+
+                # Log the response for debugging
+                logger.info(f"ESP32 response status: {response.status_code}")
 
                 if response.status_code == 200:
                     # Parse the response from ESP32
@@ -335,18 +341,107 @@ def detect_tomato(request):
             if 'error' in result:
                 return JsonResponse({'status': 'error', 'message': result['error']})
 
-            # Return detection results
+            detected_type = result.get('type')
+            if detected_type in ['ripe', 'green']:
+                # Move the servo just like the button/manual action
+                if device.ip_address and device.is_online:
+                    try:
+                        # First, move the stopper (release)
+                        control_payload = {'command': 'release'}
+                        try:
+                            requests.post(
+                                f"http://{device.ip_address}/control",
+                                json=control_payload,
+                                timeout=2
+                            )
+                        except Exception as stopper_exc:
+                            logger.warning(f"Could not move stopper (release): {stopper_exc}")
+                        payload = {
+                            'type': detected_type,
+                            'from_camera': True
+                        }
+                        # Send command to ESP32 /sort endpoint
+                        response = requests.post(
+                            f"http://{device.ip_address}/sort",
+                            json=payload,
+                            timeout=2
+                        )
+                        # Try to get updated counts from ESP32
+                        if response.status_code == 200:
+                            # After sorting, wait 2 seconds, then close the stopper by sending 'stop' command
+                            import time
+                            try:
+                                time.sleep(2)
+                                stop_payload = {'command': 'stop'}
+                                requests.post(
+                                    f"http://{device.ip_address}/control",
+                                    json=stop_payload,
+                                    timeout=2
+                                )
+                            except Exception as stopper_close_exc:
+                                logger.warning(f"Could not move stopper (stop): {stopper_close_exc}")
+                            try:
+                                esp_data = response.json()
+                                return JsonResponse({
+                                    'status': 'success',
+                                    'detection': {
+                                        'type': detected_type,
+                                        'confidence': round(result.get('confidence', 0), 1),
+                                        'contours': result.get('contours', 0)
+                                    },
+                                    'sorted': True,
+                                    'ripe_count': esp_data.get('ripe_count', 0),
+                                    'green_count': esp_data.get('green_count', 0),
+                                    'camera_ripe_count': esp_data.get('camera_ripe_count', 0),
+                                    'camera_green_count': esp_data.get('camera_green_count', 0)
+                                })
+                            except Exception:
+                                pass
+                        # If ESP32 does not return JSON
+                        # After sorting, wait 2 seconds, then close the stopper by sending 'stop' command
+                        import time
+                        try:
+                            time.sleep(2)
+                            stop_payload = {'command': 'stop'}
+                            requests.post(
+                                f"http://{device.ip_address}/control",
+                                json=stop_payload,
+                                timeout=2
+                            )
+                        except Exception as stopper_close_exc:
+                            logger.warning(f"Could not move stopper (stop): {stopper_close_exc}")
+                        return JsonResponse({
+                            'status': 'success',
+                            'detection': {
+                                'type': detected_type,
+                                'confidence': round(result.get('confidence', 0), 1),
+                                'contours': result.get('contours', 0)
+                            },
+                            'sorted': True
+                        })
+                    except Exception as e:
+                        logger.error(f"Error sending sort command from camera detection: {str(e)}")
+                        return JsonResponse({
+                            'status': 'error',
+                            'message': f'Detected {detected_type} but failed to move servo: {str(e)}'
+                        })
+                else:
+                    return JsonResponse({
+                        'status': 'error',
+                        'message': 'Device is offline or IP not set, cannot move servo.'
+                    })
+            # If not a tomato, just return detection result
             return JsonResponse({
                 'status': 'success',
                 'detection': {
-                    'type': result.get('type'),
+                    'type': detected_type,
                     'confidence': round(result.get('confidence', 0), 1),
                     'contours': result.get('contours', 0)
-                }
+                },
+                'sorted': False
             })
 
         except Exception as e:
             logger.error(f"Error in detect_tomato: {str(e)}")
             return JsonResponse({'status': 'error', 'message': str(e)})
-
     return JsonResponse({'status': 'error', 'message': 'Invalid request method'})

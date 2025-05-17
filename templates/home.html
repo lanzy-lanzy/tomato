@@ -61,7 +61,7 @@
 {% endblock %}
 
 {% block content %}
-<div x-data="tomatoSorter()" x-init="initSorter()" class="grid grid-cols-1 md:grid-cols-2 gap-8">
+<div x-data="tomatoSorter()" x-init="initSorter()" data-ip="{{ device.ip_address }}" class="grid grid-cols-1 md:grid-cols-2 gap-8">
     <!-- Control Panel -->
     <div class="bg-white rounded-lg shadow-md p-6">
         <h2 class="text-xl font-semibold mb-4">Control Panel</h2>
@@ -93,12 +93,12 @@
         <div class="mb-6">
             <h3 class="font-medium mb-2">Manual Sorting</h3>
             <div class="flex space-x-4">
-                <button @click="sortTomato('ripe')"
+                <button id="sort-ripe-button" @click="sortTomato('ripe')"
                         class="flex-1 bg-red-500 hover:bg-red-600 text-white font-medium py-2 px-4 rounded">
                     Ripe
                 </button>
 
-                <button @click="sortTomato('green')"
+                <button id="sort-green-button" @click="sortTomato('green')"
                         class="flex-1 bg-green-500 hover:bg-green-600 text-white font-medium py-2 px-4 rounded">
                     Green
                 </button>
@@ -717,7 +717,39 @@
 
                                 // In auto mode, automatically sort if cooldown has passed
                                 if (this.detectionMode === 'auto' && canSort) {
-                                    this.confirmDetection();
+                                    // Get the device IP directly
+                                    const sorterComponent = document.querySelector('[x-data="tomatoSorter()"]').__x.$data;
+                                    const deviceIP = sorterComponent.status.ip || document.querySelector('[x-data="tomatoSorter()"]').getAttribute('data-ip');
+
+                                    if (deviceIP) {
+                                        // DIRECT METHOD: Call the ESP32 camera_detect endpoint directly
+                                        // This is the most reliable method to ensure the servo moves immediately
+                                        const url = `http://${deviceIP}/camera_detect?type=${this.lastDetection}`;
+                                        console.log(`AUTO MODE: Sending direct request to ESP32: ${url}`);
+
+                                        // Set last sorted time to implement cooldown
+                                        this.lastSortedTime = now;
+
+                                        // Increment camera detection counter
+                                        this.cameraDetectedCount++;
+
+                                        fetch(url)
+                                            .then(response => {
+                                                console.log(`ESP32 response status: ${response.status}`);
+                                                return response.json();
+                                            })
+                                            .then(data => {
+                                                console.log('ESP32 response:', data);
+                                            })
+                                            .catch(error => {
+                                                console.error('Error calling ESP32 directly:', error);
+                                                // Fallback to the normal confirmation method
+                                                this.confirmDetection();
+                                            });
+                                    } else {
+                                        // Fallback to the normal confirmation method
+                                        this.confirmDetection();
+                                    }
                                 }
                             }
                         }
@@ -738,9 +770,37 @@
                 // Increment camera detection counter
                 this.cameraDetectedCount++;
 
-                // Call the sort API with camera detection flag
+                // Log for debugging
+                console.log(`Sorting ${this.lastDetection} tomato from camera detection`);
+
+                // Get the device IP from the status component
                 const sorterComponent = document.querySelector('[x-data="tomatoSorter()"]').__x.$data;
-                sorterComponent.sortTomato(this.lastDetection, true); // true indicates camera detection
+                const deviceIP = sorterComponent.status.ip || document.querySelector('[x-data="tomatoSorter()"]').getAttribute('data-ip');
+
+                // DIRECT METHOD: Call the ESP32 camera_detect endpoint directly
+                // This is the most reliable method to ensure the servo moves
+                if (deviceIP) {
+                    const url = `http://${deviceIP}/camera_detect?type=${this.lastDetection}`;
+                    console.log(`Sending direct request to ESP32: ${url}`);
+
+                    fetch(url)
+                        .then(response => {
+                            console.log(`ESP32 response status: ${response.status}`);
+                            return response.json();
+                        })
+                        .then(data => {
+                            console.log('ESP32 response:', data);
+                        })
+                        .catch(error => {
+                            console.error('Error calling ESP32 directly:', error);
+                            // Fallback to the button click method
+                            this.triggerManualButton();
+                        });
+                } else {
+                    // Fallback to the button click method if we don't have the IP
+                    console.log('No device IP available, using button click method');
+                    this.triggerManualButton();
+                }
 
                 // Update UI to show we've detected and sorted a tomato
                 const detectionType = this.lastDetection;
@@ -761,6 +821,76 @@
                         messageDiv.parentNode.removeChild(messageDiv);
                     }
                 }, 2000);
+            },
+
+            // Helper method to trigger manual button click
+            triggerManualButton() {
+                // Find and click the appropriate manual sorting button
+                // Find the Manual Sorting section
+                let manualSortingSection = null;
+                const headings = document.querySelectorAll('h3');
+                for (const heading of headings) {
+                    if (heading.textContent.includes('Manual Sorting')) {
+                        manualSortingSection = heading;
+                        break;
+                    }
+                }
+
+                // Try to find the manual sorting buttons
+                let sortButton = null;
+
+                // Method 1: Find by ID (most reliable)
+                if (this.lastDetection === 'ripe') {
+                    sortButton = document.getElementById('sort-ripe-button');
+                } else {
+                    sortButton = document.getElementById('sort-green-button');
+                }
+
+                // Method 2: Find by section heading
+                if (!sortButton && manualSortingSection) {
+                    const buttons = manualSortingSection.parentElement.querySelectorAll('button');
+                    if (this.lastDetection === 'ripe') {
+                        // Find the first button (Ripe)
+                        sortButton = buttons[0];
+                    } else {
+                        // Find the second button (Green)
+                        sortButton = buttons[1];
+                    }
+                }
+
+                // Method 3: Find by text content (fallback)
+                if (!sortButton) {
+                    const allButtons = document.querySelectorAll('button');
+                    for (const btn of allButtons) {
+                        if (this.lastDetection === 'ripe' && btn.textContent.trim() === 'Ripe') {
+                            sortButton = btn;
+                            break;
+                        } else if (this.lastDetection === 'green' && btn.textContent.trim() === 'Green') {
+                            sortButton = btn;
+                            break;
+                        }
+                    }
+                }
+
+                if (sortButton) {
+                    // Highlight the button to show it's being clicked
+                    sortButton.classList.add('ring-4', 'ring-blue-300');
+
+                    // Simulate a click on the manual button
+                    sortButton.click();
+
+                    // Remove highlight after a short delay
+                    setTimeout(() => {
+                        sortButton.classList.remove('ring-4', 'ring-blue-300');
+                    }, 500);
+
+                    console.log(`Clicked the ${this.lastDetection} button`);
+                } else {
+                    // Fallback to the API call if button not found
+                    console.log(`Button not found, using API call instead`);
+                    const sorterComponent = document.querySelector('[x-data="tomatoSorter()"]').__x.$data;
+                    sorterComponent.sortTomato(this.lastDetection, true); // true indicates camera detection
+                }
             },
 
             updateWebcamConfig() {
